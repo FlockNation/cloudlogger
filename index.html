@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scratch Cloud Log</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f9fafb;
+      color: #111827;
+      padding: 20px;
+      max-width: 900px;
+      margin: auto;
+    }
+    h1 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    th, td {
+      padding: 12px;
+      border-bottom: 1px solid #ddd;
+      text-align: center;
+    }
+    th {
+      background: #2563eb;
+      color: white;
+    }
+    tr:hover {
+      background: #f1f5f9;
+    }
+    .time {
+      font-size: 0.85rem;
+      color: #6b7280;
+    }
+  </style>
+</head>
+<body>
+  <h1>🌍 Scratch Cloud Variable Log</h1>
+  <table id="logTable">
+    <thead>
+      <tr>
+        <th>Time (UTC)</th>
+        <th>User</th>
+        <th>Variable</th>
+        <th>Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td colspan="4">Loading...</td></tr>
+    </tbody>
+  </table>
+
+  <script>
+    async function fetchLog() {
+      try {
+        const response = await fetch("cloud_log.json?_=" + Date.now()); // prevent cache
+        const data = await response.json();
+
+        const tbody = document.querySelector("#logTable tbody");
+        tbody.innerHTML = "";
+
+        data.slice().reverse().forEach(entry => { // newest first
+          const tr = document.createElement("tr");
+
+          tr.innerHTML = `
+            <td class="time">${entry.time}</td>
+            <td>${entry.user || "Unknown"}</td>
+            <td>${entry.variable}</td>
+            <td>${entry.value}</td>
+          `;
+
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error("Error fetching logs:", err);
+      }
+    }
+
+    // initial load
+    fetchLog();
+    // refresh every 5 seconds
+    setInterval(fetchLog, 5000);
+  </script>
+</body>
+</html>
