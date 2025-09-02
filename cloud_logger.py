@@ -1,177 +1,84 @@
-import os
-import time
-import warnings
-from datetime import datetime
-from threading import Thread
+# inside start_cloud_listener() where you set up events = cloud.events()
 
-import scratchattach as sa
-from flask import Flask, jsonify, Response
+seen_activity_shapes = set()
 
-# Suppress login warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='scratchattach')
+@events.event
+def on_set(activity):
+    # 1) debug: print available attributes *once per distinct shape*
+    shape = tuple(sorted([k for k in dir(activity) if not k.startswith('_')]))
+    if shape not in seen_activity_shapes:
+        seen_activity_shapes.add(shape)
+        try:
+            # safest: show the __dict__ if available, else dir()
+            info = getattr(activity, '__dict__', None) or {k: getattr(activity, k) for k in shape}
+        except Exception:
+            info = {k: repr(getattr(activity, k, None)) for k in shape}
+        print("DEBUG: new activity shape detected. Example attributes:")
+        print(info)
+        # optional: write this debug info to a file for later inspection
+        with open("activity_debug_samples.txt", "a", encoding="utf-8") as f:
+            f.write(f"--- {datetime.utcnow().isoformat()} ---\n")
+            f.write(str(info) + "\n\n")
 
-# Configuration
-SCRATCH_USERNAME = os.environ.get("SCRATCH_USERNAME", "PSULions23")
-SCRATCH_PASSWORD = os.environ.get("SCRATCH_PASSWORD", "kevin123")
-SCRATCH_PROJECT_ID = os.environ.get("SCRATCH_PROJECT_ID", "1211167512")
+    # 2) Try multiple attribute names for username
+    username = None
+    for attr in ("user", "username", "author", "player", "owner"):
+        username = getattr(activity, attr, None)
+        if username:
+            break
 
-# In-memory log (keeps recent events)
-MAX_LOG_ENTRIES = 2000
-log_data = []
+    # 3) Try numeric id fallback (if library exposes it)
+    if not username:
+        uid = getattr(activity, "user_id", None) or getattr(activity, "uid", None) or getattr(activity, "id", None)
+        if uid:
+            # Attempt to resolve an ID to username (may fail depending on library API)
+            try:
+                # session must be in scope — if not, keep it as None. Use sa.get_user(uid) or session.connect_user(uid)
+                # sa.get_user() may accept username only; if uid is numeric this may fail — handle safely
+                user_obj = None
+                try:
+                    # try session.connect_user(uid) if you have 'session'
+                    user_obj = session.connect_user(str(uid))
+                except Exception:
+                    try:
+                        user_obj = sa.get_user(str(uid))
+                    except Exception:
+                        user_obj = None
+                if user_obj:
+                    # try common properties
+                    username = getattr(user_obj, "username", None) or getattr(user_obj, "name", None)
+            except Exception:
+                username = None
 
-def append_log(entry):
-    log_data.append(entry)
-    # Keep memory bounded
-    if len(log_data) > MAX_LOG_ENTRIES:
-        del log_data[0 : len(log_data) - MAX_LOG_ENTRIES]
+    # 4) Last-resort: check whether the project writes a separate 'last_user' cloud var
+    if not username:
+        try:
+            # 'cloud' must be in outer scope; attempt to read a helper var your project might write
+            last_user_var = None
+            try:
+                last_user_var = cloud.get_var("last_user")
+            except Exception:
+                # some projects encode usernames in numeric var(s); skip here
+                last_user_var = None
+            if last_user_var:
+                username = last_user_var
+        except Exception:
+            username = None
 
-def start_cloud_listener():
-    """
-    Connect to Scratch and start listening to cloud events.
-    Uses cloud.events() and @events.event handlers (correct API).
-    """
-    try:
-        print("Logging into Scratch...")
-        session = sa.login(SCRATCH_USERNAME, SCRATCH_PASSWORD)
-        print("Connected to Scratch session.")
+    # 5) Final fallback
+    if not username:
+        username = "Unknown"
 
-        print(f"Connecting to cloud for project {SCRATCH_PROJECT_ID}...")
-        cloud = session.connect_cloud(str(SCRATCH_PROJECT_ID))
-        print("Connected to project cloud.")
+    # Collect timestamp and the rest (use any attribute names that actually exist)
+    ts = getattr(activity, "timestamp", None) or datetime.utcnow().isoformat()
+    variable_name = getattr(activity, "var", getattr(activity, "name", None))
+    value = getattr(activity, "value", None)
 
-        # Correct way to get event handlers for this cloud connection:
-        events = cloud.events()
-
-        @events.event
-        def on_set(activity):
-            ts = getattr(activity, "timestamp", None) or datetime.utcnow().isoformat()
-            entry = {
-                "time": ts,
-                "variable": getattr(activity, "var", getattr(activity, "name", None)),
-                "value": getattr(activity, "value", None),
-                "user": getattr(activity, "user", None),
-            }
-            append_log(entry)
-            print(f"[{entry['time']}] {entry['user']} set {entry['variable']} -> {entry['value']}")
-
-        @events.event
-        def on_create(activity):
-            ts = getattr(activity, "timestamp", None) or datetime.utcnow().isoformat()
-            entry = {
-                "time": ts,
-                "variable": getattr(activity, "var", getattr(activity, "name", None)),
-                "value": None,
-                "user": getattr(activity, "user", None),
-                "action": "create",
-            }
-            append_log(entry)
-            print(f"[{entry['time']}] {entry['user']} created {entry['variable']}")
-
-        @events.event
-        def on_del(activity):
-            ts = getattr(activity, "timestamp", None) or datetime.utcnow().isoformat()
-            entry = {
-                "time": ts,
-                "variable": getattr(activity, "var", getattr(activity, "name", None)),
-                "value": None,
-                "user": getattr(activity, "user", None),
-                "action": "delete",
-            }
-            append_log(entry)
-            print(f"[{entry['time']}] {entry['user']} deleted {entry['variable']}")
-
-        @events.event
-        def on_ready():
-            print("Cloud events listener ready.")
-
-        # Start the cloud event loop (this will run in background)
-        print("Starting cloud event loop...")
-        events.start()
-
-    except Exception as e:
-        # If anything goes wrong, print it and try to reconnect after a short delay
-        print("Cloud listener error:", e)
-        print("Retrying in 10 seconds...")
-        time.sleep(10)
-        start_cloud_listener()  # retry (simple retry loop)
-
-# Start the cloud listener in a daemon thread so Flask can run in main thread
-listener_thread = Thread(target=start_cloud_listener, daemon=True)
-listener_thread.start()
-
-# --- Flask app to serve logs and a simple frontend ---
-app = Flask(__name__)
-
-# Simple frontend HTML (you can replace with a static file instead)
-INDEX_HTML = """
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Scratch Cloud Log</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <style>
-      body{font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; padding:20px; max-width:1000px;margin:auto;}
-      h1{text-align:center}
-      table{width:100%; border-collapse:collapse; margin-top:1rem; box-shadow:0 4px 10px rgba(0,0,0,0.06);}
-      th,td{padding:10px;border-bottom:1px solid #e6e6e6;text-align:center;}
-      th{background:#111827;color:white}
-      tr:hover{background:#f8fafc}
-      .time{font-size:0.85rem;color:#6b7280}
-      .small{font-size:0.9rem;color:#374151}
-    </style>
-  </head>
-  <body>
-    <h1>🌍 Scratch Cloud Log</h1>
-    <div style="text-align:center"><small>Auto-refreshes every 5s • Showing newest first</small></div>
-    <table id="logTable">
-      <thead>
-        <tr><th>Time (UTC)</th><th>User</th><th>Variable</th><th>Value</th></tr>
-      </thead>
-      <tbody><tr><td colspan="4">Loading…</td></tr></tbody>
-    </table>
-
-    <script>
-      async function fetchLogs(){
-        try{
-          const res = await fetch('/logs?_=' + Date.now());
-          const data = await res.json();
-          const tbody = document.querySelector('#logTable tbody');
-          tbody.innerHTML = '';
-          // newest first
-          data.slice().reverse().forEach(e => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `<td class="time">${e.time || ''}</td>
-                            <td class="small">${e.user || ''}</td>
-                            <td>${e.variable || ''}</td>
-                            <td>${e.value === null ? '' : e.value || ''}</td>`;
-            tbody.appendChild(tr);
-          });
-          if(data.length === 0){
-            document.querySelector('#logTable tbody').innerHTML = '<tr><td colspan="4">No logs yet.</td></tr>';
-          }
-        }catch(err){
-          console.error('fetchLogs error', err);
-        }
-      }
-      fetchLogs();
-      setInterval(fetchLogs, 5000);
-    </script>
-  </body>
-</html>
-"""
-
-@app.route("/")
-def home():
-    return Response(INDEX_HTML, mimetype="text/html")
-
-@app.route("/logs")
-def logs_route():
-    # Return the in-memory log (most recent last)
-    return jsonify(log_data)
-
-if __name__ == "__main__":
-    # Flask runs on port 8080 on Render by default
-    port = int(os.environ.get("PORT", 8080))
-    print("Starting Flask server on port", port)
-    app.run(host="0.0.0.0", port=port)
+    entry = {
+        "time": ts,
+        "variable": variable_name,
+        "value": value,
+        "user": username
+    }
+    append_log(entry)
+    print(f"[{entry['time']}] {entry['user']} set {entry['variable']} -> {entry['value']}")
