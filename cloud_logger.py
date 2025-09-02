@@ -1,4 +1,3 @@
-# cloud_logger.py
 import os
 import time
 import warnings
@@ -8,23 +7,21 @@ from threading import Thread
 import scratchattach as sa
 from flask import Flask, jsonify, Response
 
-# Optional: suppress the login-data warning if you understand the risk
-import warnings as _warnings
-from scratchattach.site.session import LoginDataWarning
-_warnings.filterwarnings("ignore", category=LoginDataWarning)
+# Suppress login warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='scratchattach')
 
-# Config (use environment variables on Render for safety)
+# Configuration
 SCRATCH_USERNAME = os.environ.get("SCRATCH_USERNAME", "PSULions23")
 SCRATCH_PASSWORD = os.environ.get("SCRATCH_PASSWORD", "kevin123")
 SCRATCH_PROJECT_ID = os.environ.get("SCRATCH_PROJECT_ID", "1211167512")
 
-# in-memory log (keeps recent events)
+# In-memory log (keeps recent events)
 MAX_LOG_ENTRIES = 2000
 log_data = []
 
 def append_log(entry):
     log_data.append(entry)
-    # keep memory bounded
+    # Keep memory bounded
     if len(log_data) > MAX_LOG_ENTRIES:
         del log_data[0 : len(log_data) - MAX_LOG_ENTRIES]
 
@@ -47,7 +44,6 @@ def start_cloud_listener():
 
         @events.event
         def on_set(activity):
-            # activity.var, activity.value, activity.user, activity.timestamp (example fields)
             ts = getattr(activity, "timestamp", None) or datetime.utcnow().isoformat()
             entry = {
                 "time": ts,
@@ -88,8 +84,8 @@ def start_cloud_listener():
         def on_ready():
             print("Cloud events listener ready.")
 
-        # start() blocks in many implementations; run in thread when calling from main thread
-        print("Starting cloud event loop (this will run in background)...")
+        # Start the cloud event loop (this will run in background)
+        print("Starting cloud event loop...")
         events.start()
 
     except Exception as e:
@@ -171,7 +167,7 @@ def home():
 
 @app.route("/logs")
 def logs_route():
-    # return the in-memory log (most recent last)
+    # Return the in-memory log (most recent last)
     return jsonify(log_data)
 
 if __name__ == "__main__":
