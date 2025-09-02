@@ -1,9 +1,7 @@
 import scratchattach as sa
-import json
-import time
-from datetime import datetime
-from threading import Thread
 from flask import Flask, jsonify
+from threading import Thread
+from datetime import datetime
 
 SCRATCH_USERNAME = "PSULions23"
 SCRATCH_PASSWORD = "kevin123"
@@ -11,37 +9,37 @@ SCRATCH_PROJECT_ID = 1211167512
 
 log_data = []
 
-print("Logging in...")
+# Log in and connect
 session = sa.login(SCRATCH_USERNAME, SCRATCH_PASSWORD)
+# Optionally keep conn if you need to set vars later
+conn = session.connect_cloud(SCRATCH_PROJECT_ID)
 
-print("Connecting to cloud project...")
-cloud = session.connect_cloud(SCRATCH_PROJECT_ID)
+# Set up event listener correctly
+events = sa.CloudEvents(str(SCRATCH_PROJECT_ID))
 
-@cloud.event
+@events.event
 def on_set(event):
-    timestamp = datetime.utcnow().isoformat()
-
-    entry = {
+    timestamp = event.timestamp or datetime.utcnow().isoformat()
+    log_data.append({
         "time": timestamp,
-        "variable": event.name,
+        "variable": event.var,
         "value": event.value,
         "user": event.user
-    }
+    })
+    print(f"[{timestamp}] {event.user} set {event.var} to {event.value}")
 
-    log_data.append(entry)
-    print(f"[{timestamp}] {event.user} set {event.name} to {event.value}")
+@events.event
+def on_ready():
+    print("Cloud event listener is ready!")
 
-# Keep listener alive in a background thread
-def run_listener():
-    print("Logger started. Waiting for cloud changes...")
-    while True:
-        time.sleep(1)
+# Start listening in a separate thread
+def run_events():
+    events.start()
 
-listener_thread = Thread(target=run_listener)
-listener_thread.daemon = True
-listener_thread.start()
+thread = Thread(target=run_events, daemon=True)
+thread.start()
 
-# Flask app to serve logs
+# Flask app
 app = Flask(__name__)
 
 @app.route("/")
